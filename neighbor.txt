@@ -1,2 +1,2 @@
-LEO1 1
-enp0s31f6 GEO1
+Ground
+enp0s31f6 LEO1

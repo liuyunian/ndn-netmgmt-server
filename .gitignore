@@ -10,3 +10,7 @@ waf3-*-*/
 
 #vscode
 .vscode/
+
+# build
+build/
+

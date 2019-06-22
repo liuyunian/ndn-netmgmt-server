@@ -2,15 +2,22 @@
 #include <fstream>
 #include <set>
 #include <map>
-#include <boost/program_options.hpp>
 
 #include <assert.h>
+#include <pcap/pcap.h>
+#include <boost/program_options.hpp>
 
 #include "ndn_server.h"
-#include "consumer/consumer.h"
+#include "ndn_capture.h"
+#include "threadpool.h"
+#include "consumer/ndn_consumer.h"
 
-std::set<std::string> interfaceSet;
+ThreadPool threadPool(10); // Thread Pool
+Consumer * consumer = nullptr;
+Capture * capture = nullptr;
 std::map<std::string, std::string> neighborStore;
+
+static std::set<std::string> interfaceSet;
 
 static void
 getRunningInterface(){
@@ -76,7 +83,7 @@ listenChangeForInterface(std::string & interfaceName){
     return 0;
 }
 
-void listenThreadEntry(Consumer & consumer){
+void listenThreadEntry(){
     while(true){
         std::string interfaceName;
         int ret = listenChangeForInterface(interfaceName);
@@ -88,7 +95,7 @@ void listenThreadEntry(Consumer & consumer){
 
             auto neighbor_iter = neighborStore.find(interfaceName);
             if(neighbor_iter != neighborStore.end()){
-                consumer.inform(neighbor_iter->second, "stop");
+                consumer->notifyTopologyChange(neighbor_iter->second, "stop");
             }
         }
         else if(ret > 0){
@@ -97,7 +104,7 @@ void listenThreadEntry(Consumer & consumer){
 
             auto neighbor_iter = neighborStore.find(interfaceName);
             if(neighbor_iter != neighborStore.end()){
-                consumer.inform(neighbor_iter->second, "start");
+                consumer->notifyTopologyChange(neighbor_iter->second, "start");
             }
         }
     }
@@ -110,15 +117,16 @@ void readNeighbor(std::string & nodeName){
 
     assert(std::getline(fin, line));
     std::stringstream ss(line);
-    int num;
-    ss >> nodeName >> num;
+    ss >> nodeName;
+    std::cout << nodeName << std::endl;
 
-    for(int i = 0; i < num; ++ i){
-        std::string interface;
-        std::string neighborName;
-        assert(std::getline(fin, line));
+    std::string interface;
+    std::string neighborName;
+    while(std::getline(fin, line)){
         std::stringstream ss(line);
         ss >> interface >> neighborName;
+        std::cout << interface << std::endl;
+        std::cout << neighborName << std::endl;
         neighborStore.insert({interface, neighborName});
     }
 }
@@ -126,6 +134,7 @@ void readNeighbor(std::string & nodeName){
 void usage(const boost::program_options::options_description &options){
     std::cout << "Usage: sudo build/server [options] <prefix>" << std::endl;
     std::cout << options;
+
     exit(0);
 }
 
@@ -151,15 +160,22 @@ int main(int argc, char* argv[]){
 
     std::string nodeName;
     readNeighbor(nodeName);
-
-    Consumer consumer(nodeName, "/netmgmt/client");
+    consumer = new Consumer(nodeName);
+    
     getRunningInterface();
-    std::thread listenThread(listenThreadEntry, std::ref(consumer));
+    std::thread listenThread(listenThreadEntry);
+
+    capture = new Capture(neighborStore);
+    std::thread captureThread(&Capture::run, capture);
     
     Server server(prefix.append("/netmgmt"));
     server.run();
 
     listenThread.join();
+    captureThread.join();
+
+    delete consumer;
+    delete capture;
 
     return 0;
 }

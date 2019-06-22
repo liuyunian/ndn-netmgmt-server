@@ -5,11 +5,8 @@
 #include <ndn-cxx/util/time.hpp>
 #include <ndn-cxx/security/signing-helpers.hpp>
 #include <memory>
-#include <queue>
-#include <mutex>
 
 #include "threadpool.h"
-#include "ndn_pacp.h"
 
 class Server{
 public:
@@ -45,21 +42,12 @@ private:
     */
     size_t paddingStatusDataStore();
 
-    /**
-     * @brief 获取正在运行的网络设备
-    */
-    void getRunningNetworkDevs();
-
 private:
     ndn::Face m_face;
     ndn::KeyChain m_keyChain;
 
     std::string m_prefix;
-    std::unique_ptr<ThreadPool> m_pool = std::make_unique<ThreadPool>(10);
-
     std::vector<std::unique_ptr<ndn::Data>> m_statusDataStore;
-
-    std::map<std::string, std::unique_ptr<Capture>> m_devStore;
 };
 
 #endif

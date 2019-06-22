@@ -11,6 +11,7 @@ def configure(conf):
     conf.check_cfg(package='libndn-cxx', args=['--cflags', '--libs'], uselib_store='NDN_CXX', mandatory=True)
     conf.check_cfg(path='pcap-config', package='libpcap', args=['--libs', '--cflags'], uselib_store='PCAP', mandatory=True)
 
+
 def build(bld): # 创建一个任务生成器，用来生成下面的任务
     bld.program(
         features='cxx',

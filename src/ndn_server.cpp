@@ -1,10 +1,15 @@
-#include "ndn_server.h"
-#include "threadpool.h"
 #include <iostream>
-#include <pcap/pcap.h>
 
-#define ALL_CONTENT_LENGTH 1024*15
+#include "ndn_server.h"
+#include "ndn_capture.h"
+#include "threadpool.h"
+
+#define ALL_CONTENT_LENGTH 1024*50 // 50KB
 #define DATA_MAX_LENGTH 1024
+
+extern std::map<std::string, std::string> neighborStore;
+extern Capture * capture;
+extern ThreadPool threadPool;
 
 Server::Server(const std::string & prefix) : 
     m_prefix(prefix){}
@@ -32,9 +37,9 @@ void Server::onInterest(const ndn::Interest & interest){
     std::cout << "reveive interest: " << interestName << std::endl;
 
     // 路由选择
-    std::string clientRequest = interestName.at(-1).toUri(); //最后一部分表示客户端的请求
+    std::string clientRequest = interestName.at(-1).toUri();
     if(clientRequest == "status"){
-        m_pool->enqueue([this, interestName]{
+        threadPool.enqueue([this, interestName]{
             size_t data_num = paddingStatusDataStore();
             if(data_num <= 0){
                 std::cerr << "fail to padding status data store" << std::endl;
@@ -49,29 +54,21 @@ void Server::onInterest(const ndn::Interest & interest){
         });
     }
     else if(clientRequest == "capture-start"){
-        m_pool->enqueue([this, interestName]{
-            getRunningNetworkDevs();
-            
+        threadPool.enqueue([this, interestName]{
             std::string devList("<Devices>");
-            for(auto & item : m_devStore){
+            for(auto & item : neighborStore){
                 devList.append("<device>" + item.first + "</device>");
-                m_pool->enqueue([&item]{
-                    item.second->run();
-                });
             }
             devList.append("</Devices>");
+
+            capture->setCacheFlag(true);
 
             sendData(interestName, devList);
         });
     }
     else if(clientRequest == "capture-stop"){
-        m_pool->enqueue([this, interestName]{
-            for(auto & item : m_devStore){
-                item.second->stop();
-                item.second.reset();
-            }
-            m_devStore.clear();
-
+        threadPool.enqueue([this, interestName]{
+            capture->setCacheFlag(false);
             sendAck(interestName);
         });
     }
@@ -82,29 +79,18 @@ void Server::onInterest(const ndn::Interest & interest){
             m_face.put(*(m_statusDataStore.at(segmentNo)));
         }
         else if(clientRequest == "packet"){
-            m_pool->enqueue([this, interestName]{
+            threadPool.enqueue([this, interestName]{
                 std::string dataContent("<packets>");
-                size_t pre_size;
-                do{
-                    pre_size = dataContent.size();
-                    for(auto &item : m_devStore){
-                        item.second->m_mutex.lock();
-                        if(!item.second->m_pktQue.empty()){
-                            std::string packet = item.second->m_pktQue.front();
-                            if(packet.size() < (DATA_MAX_LENGTH-dataContent.size())){
-                                dataContent.append(packet);
-                                item.second->m_pktQue.pop();
-                            }
-                            else{
-                                item.second->m_mutex.unlock();
-                                goto sendData;
-                            }
-                        }
-                        item.second->m_mutex.unlock();
+                std::string packet;
+                for(;;){
+                    if(capture->getPktFromQue(packet) >= 0 && packet.size() < (DATA_MAX_LENGTH - dataContent.size())){
+                        dataContent.append(packet);
                     }
-                }while(dataContent.size() != pre_size);
+                    else{
+                        break;
+                    }
+                }
 
-                sendData:
                 if(dataContent == "<packets>"){
                     sendAck(interestName);
                 }
@@ -112,7 +98,6 @@ void Server::onInterest(const ndn::Interest & interest){
                     dataContent.append("</packets>");
                     sendData(interestName, dataContent);
                 }
-                
             });
         }
         else{
@@ -188,24 +173,5 @@ size_t Server::paddingStatusDataStore(){
     }
     else{
         return -1;
-    }
-}
-
-void Server::getRunningNetworkDevs(){
-    char errbuf[PCAP_ERRBUF_SIZE]; 
-
-    pcap_if_t * alldevs;
-    int ret = pcap_findalldevs(&alldevs, errbuf);
-    if(ret < 0){
-        std::cerr << "pacp fail to find devs: " << errbuf << std::endl;
-    }
-
-    pcap_if_t * dev;
-    for(dev = alldevs; dev != NULL; dev = dev->next){
-        if(dev->flags == 6 && (strcmp(dev->name, "any") != 0)){
-            std::string devName(dev->name);
-            auto capture = std::make_unique<Capture>(devName);
-            m_devStore.insert({devName, std::move(capture)});
-        }
     }
 }

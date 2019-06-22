@@ -1,15 +1,21 @@
 #include <iostream>
 #include <ndn-cxx/interest.hpp>
 
-#include "consumer/consumer.h"
+#include "ndn_consumer.h"
 
-Consumer::Consumer(const std::string & name, const std::string & prefix):
-    m_nodeName(name),
-    m_prefix(prefix){}
+Consumer::Consumer(const std::string & name) : 
+    m_name(name)
+{}
 
-void Consumer::inform(const std::string & neighborName, const std::string & status){
+void Consumer::notifyTopologyChange(const std::string & neighborName, const std::string & status){
     ndn::Name interestPrefix(m_prefix);
-    sendInterest(interestPrefix.append(m_nodeName).append(neighborName).append(status));
+    sendInterest(interestPrefix.append(m_name).append(neighborName).append(status));
+    m_face.processEvents();
+}
+
+void Consumer::notifyTrafficChange(const std::string & neighborName, uint64_t seq){
+    ndn::Name interestPrefix(m_prefix);
+    sendInterest(interestPrefix.append(m_name).append(neighborName).appendNumber(seq));
     m_face.processEvents();
 }
 
@@ -38,13 +44,10 @@ void Consumer::onData(const ndn::Data & data){
 }
 
 void Consumer::onNack(const ndn::Interest & interest){
-    std::cerr << "Nack: " << interest.getName() << std::endl;
+    std::cerr << "INFO: Nack: " << interest.getName() << std::endl;
 }
 
 void Consumer::onTimeOut(const ndn::Interest & interest){
-    std::cerr << "Time out: " << interest.getName() << std::endl;
-
-    // 重传处理
-    
+    std::cerr << "WARNNING: Time out: " << interest.getName() << std::endl;
 }
 
