@@ -27,14 +27,6 @@ public:
     int getPktFromQue(std::string &);
 
 private:
-    struct Interface{
-        uint8_t addr[6];
-        std::string neighborName;
-        bool trafficState = false;
-        std::mutex trafficMutex;
-    };
-
-private:
     bool handlePacket(size_t len, const uint8_t * pkt);
 
     bool handleNdN(size_t len, const uint8_t * pkt);
@@ -48,6 +40,14 @@ private:
     bool isEqual(const uint8_t *, const uint8_t *);
 
     void startTimer(std::string, u_int64_t dura);
+
+private:
+    struct Interface{
+        uint8_t addr[6];
+        std::string neighborName;
+        bool trafficState = false;
+        std::mutex trafficMutex;
+    };
 
 private:
     int m_socket;

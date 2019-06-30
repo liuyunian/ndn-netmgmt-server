@@ -1,8 +1,10 @@
+#include <string.h>
 #include <iostream>
 
 #include "ndn_server.h"
 #include "ndn_capture.h"
 #include "threadpool.h"
+#include "log/log.h"
 
 #define ALL_CONTENT_LENGTH 1024*50 // 50KB
 #define DATA_MAX_LENGTH 1024
@@ -15,42 +17,44 @@ Server::Server(const std::string & prefix) :
     m_prefix(prefix){}
 
 void Server::run(){
-    std::cout << "SERVER IS LISTEN: " << m_prefix << std::endl;
-
     try {
         m_face.setInterestFilter(
             ndn::Name(m_prefix),
             bind(&Server::onInterest, this, _2),
             nullptr,
-            bind(&Server::onRegisterFailed, this, _1, _2)
+            bind(&Server::onRegisterFailed, this, _2)
         );
 
-        m_face.processEvents();     
+        log_info("Server is listening %s", m_prefix.c_str());
+
+        m_face.processEvents();
     }
     catch (const std::exception& e) {
-        std::cerr << "ERROR: " << e.what() << std::endl;
+        log_fatal(FAT_NSYS, "%s", e.what());
     }    
 }
 
 void Server::onInterest(const ndn::Interest & interest){
     ndn::Name interestName = interest.getName();
-    std::cout << "reveive interest: " << interestName << std::endl;
+    log_info("Receive interest: %s", interestName.toUri().c_str());
 
     // 路由选择
     std::string clientRequest = interestName.at(-1).toUri();
     if(clientRequest == "status"){
         threadPool.enqueue([this, interestName]{
-            size_t data_num = paddingStatusDataStore();
-            if(data_num <= 0){
-                std::cerr << "fail to padding status data store" << std::endl;
-                return;
+            paddingStatusDataStore();
+            if(m_statusDataStore.empty()){
+                log_err(ERR_NSYS, "statusDataStore is empty");
             }           
 
+            size_t dataNum = m_statusDataStore.size();
             ndn::Data respondData(interestName);
             respondData.setFreshnessPeriod(ndn::time::milliseconds(2000));
-            respondData.setContent((const uint8_t *)&data_num, sizeof(size_t));
+            respondData.setContent((const uint8_t *)&dataNum, sizeof(size_t));
             m_keyChain.sign(respondData, ndn::signingWithSha256());
+
             m_face.put(respondData);
+            log_info("Send Data: %s", interestName.toUri().c_str());
         });
     }
     else if(clientRequest == "capture-start"){
@@ -76,7 +80,10 @@ void Server::onInterest(const ndn::Interest & interest){
         clientRequest = interestName.at(-2).toUri();
         if(clientRequest == "status"){
             const auto segmentNo = static_cast<u_int64_t>(interestName.at(-1).toNumber());
+
             m_face.put(*(m_statusDataStore.at(segmentNo)));
+            ndn::Name dataName = m_statusDataStore.at(segmentNo)->getName();
+            log_info("Send Data: %s", dataName.toUri().c_str());
         }
         else if(clientRequest == "packet"){
             threadPool.enqueue([this, interestName]{
@@ -101,13 +108,16 @@ void Server::onInterest(const ndn::Interest & interest){
             });
         }
         else{
-            std::cerr << "no match route" << std::endl;
+            log_err(ERR_NSYS, "No match route for this client request");
         }
     }
 }
 
-void Server::onRegisterFailed(const ndn::Name & prefix, const std::string & reason){
-    std::cerr << "Prefix = " << prefix << "Registration Failure. Reason = " << reason << std::endl;
+void Server::onRegisterFailed(const std::string & reason){
+    log_fatal(FAT_NSYS, "Prefix = %s registration failure %s", 
+            m_prefix.c_str(), 
+            reason.c_str()
+    );
 }
 
 void Server::sendAck(const ndn::Name & dataName){
@@ -116,62 +126,46 @@ void Server::sendAck(const ndn::Name & dataName){
 
 void Server::sendData(const ndn::Name & dataName, const std::string & dataContent){
     auto data = std::make_unique<ndn::Data>(dataName);
-    data->setFreshnessPeriod(ndn::time::milliseconds(2000)); //Data包生存期2s
+    data->setFreshnessPeriod(ndn::time::milliseconds(2000));
     data->setContent((const uint8_t *)&dataContent[0], dataContent.size());
     m_keyChain.sign(*data, ndn::signingWithSha256());
+
     m_face.put(*data);
+    log_info("Send Data: %s", dataName.toUri().c_str());
 }
 
-int Server::getNFDInformation(char * statusInfor){
-    FILE * ptr = popen("nfdc status report xml", "r"); //文件指针
+int Server::getNFDStatus(char * statusInfor){
+    FILE * ptr = popen("nfdc status report xml", "r");
     if(ptr == NULL){   
         return -1;
     }   
-    fgets(statusInfor, ALL_CONTENT_LENGTH, ptr); //将全部的信息都存到临时tmp字符数组中
-
+    fgets(statusInfor, ALL_CONTENT_LENGTH, ptr);
     pclose(ptr);
     return 0;
 }
 
-size_t Server::paddingStatusDataStore(){
+void Server::paddingStatusDataStore(){
     char statusInfor[ALL_CONTENT_LENGTH];
-    int ret = getNFDInformation(statusInfor);
+    int ret = getNFDStatus(statusInfor);
     if(ret < 0){
-        std::cerr << "fail to get NFD infor" << std::endl;
-        return 0;
+        log_err(ERR_NSYS, "Fail to get NFD status");
+        return;
     }
 
-    size_t data_num = strlen(statusInfor) / DATA_MAX_LENGTH + 1;
+    size_t dataNum = strlen(statusInfor) / DATA_MAX_LENGTH + 1;
     m_statusDataStore.clear();
-    for(u_int64_t i = 0; i < data_num-1; ++ i){
-        char buffer[DATA_MAX_LENGTH];
+    char buffer[DATA_MAX_LENGTH + 1] = {0};
+    
+    for(u_int64_t i = 0; i < dataNum; ++ i){
         strncpy(buffer, statusInfor+(i*DATA_MAX_LENGTH), DATA_MAX_LENGTH);
+        log_debug("%d, %s", strlen(buffer), buffer);
 
         ndn::Name dataName = ndn::Name(m_prefix).append("status").appendNumber(i);
         auto data = std::make_unique<ndn::Data>(dataName);
         data->setFreshnessPeriod(ndn::time::milliseconds(2000));
-        data->setContent((const uint8_t *)buffer, DATA_MAX_LENGTH);
+        data->setContent((const uint8_t *)buffer, strlen(buffer));
         m_keyChain.sign(*data, ndn::signingWithSha256());
 
         m_statusDataStore.push_back(std::move(data));
-    }
-
-    size_t lastData_size = strlen(statusInfor)-(data_num-1)*DATA_MAX_LENGTH;
-    char buffer[lastData_size];
-    strncpy(buffer, statusInfor+((data_num-1)*DATA_MAX_LENGTH), lastData_size);
-
-    ndn::Name dataName = ndn::Name(m_prefix).append("status").appendNumber(data_num-1);
-    auto data = std::make_unique<ndn::Data>(dataName);
-    data->setFreshnessPeriod(ndn::time::milliseconds(2000));
-    data->setContent((const uint8_t *)buffer, lastData_size);
-    m_keyChain.sign(*data, ndn::signingWithSha256());
-
-    m_statusDataStore.push_back(std::move(data));
-
-    if(m_statusDataStore.size() == data_num){
-        return data_num;
-    }
-    else{
-        return -1;
     }
 }

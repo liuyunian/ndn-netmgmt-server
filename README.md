@@ -8,6 +8,9 @@ ndn-netmgmt-server
         -| consumer
             -| ndn_consumer.cpp
             -| ndn_cousumer.h
+        -| log
+            -| log.c
+            -| log.h
         -| main.cpp
         -| ndn-capture.cpp
         -| ndn-capture.h

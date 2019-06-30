@@ -19,7 +19,7 @@ private:
     void onInterest(const ndn::Interest & interest);
 
     // @brief 注册前缀失败之后的回调函数
-    void onRegisterFailed(const ndn::Name & prefix, const std::string & reason);
+    void onRegisterFailed(const std::string & reason);
 
     void sendAck(const ndn::Name & dataName);
 
@@ -34,13 +34,12 @@ private:
      * @param statusInfor字符指针,指向的内存区域用于存放nfd状态信息
      * @return 失败返回-1，成功返回０
     */
-    int getNFDInformation(char * statusInfor);
+    int getNFDStatus(char * statusInfor);
 
     /**
      * @brief 对nfd状态信息进行分段，并包装成data
-     * ＠return 返回data包的个数
     */
-    size_t paddingStatusDataStore();
+    void paddingStatusDataStore();
 
 private:
     ndn::Face m_face;

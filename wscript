@@ -16,7 +16,7 @@ def build(bld): # 创建一个任务生成器，用来生成下面的任务
     bld.program(
         features='cxx',
         target='server',
-        source=bld.path.ant_glob(['src/*.cpp', 'src/consumer/*.cpp']),
-        includes = ". ./src/ ./src/consumer", 
+        source=bld.path.ant_glob(['src/*.cpp', 'src/consumer/*.cpp', 'src/log/*.cpp']),
+        includes = ". ./src ./src/consumer ./src/log/", 
         use='NDN_CXX PCAP',
     )

@@ -9,15 +9,16 @@
 #include <net/ethernet.h>
 #include <arpa/inet.h>
 
-#include <boost/endian/conversion.hpp>
-// #include <boost/bind.hpp>
-
 #include <ndn-cxx/net/ethernet.hpp>
 #include <ndn-cxx/lp/packet.hpp>
 #include <ndn-cxx/lp/nack.hpp>
+#include <ndn-cxx/lp/nack-header.hpp>
 
 #include "ndn_capture.h"
 #include "threadpool.h"
+#include "log/log.h"
+
+#define TIME 1000
 
 extern Consumer * consumer;
 extern ThreadPool threadPool;
@@ -41,12 +42,11 @@ Capture::~Capture(){
 
 void Capture::run(){
     m_socket = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
-    if(m_socket < 0){ 
-        std::cerr << "ERROR: Server fail to create socket" << std::endl;
-        exit(1);
+    if(m_socket < 0){
+        log_fatal(FAT_SYS, "Server fail to create socket");
     }
 
-    std::cout << "INFO: Capture is running" << std::endl;
+    log_info("Capture is running");
 
     uint8_t buffer[ETH_FRAME_LEN];
     size_t len;
@@ -59,14 +59,13 @@ void Capture::run(){
         
         shouldSave = handlePacket(len, buffer);
         if(shouldSave){
-            std::cout << m_pktInfor << std::endl;
-
             ++ seq;
             if(seq == UINT64_MAX){
                 seq = 0;
             }
 
             m_pktInfor.append("</body></packet>");
+            log_debug("%s", m_pktInfor.c_str());
 
             size_t start, end;
             start = m_pktInfor.find("<origin>") + 8;
@@ -84,7 +83,7 @@ void Capture::run(){
                     iter->second->trafficMutex.unlock();
                     if(!state){
                         consumer->notifyTrafficChange(iter->second->neighborName, seq);
-                        startTimer(iter->first, 1000);
+                        startTimer(iter->first, TIME);
                     }
                 }
             }
@@ -132,7 +131,7 @@ int Capture::getPktFromQue(std::string & pkt){
 
 bool Capture::handlePacket(size_t len, const uint8_t * pkt){
     auto ether = reinterpret_cast<const ether_header *>(pkt);
-    if(ether->ether_type != htons(0x8624)){
+    if(ether->ether_type != htons(ndn::ethernet::ETHERTYPE_NDN)){
         return false;
     }
 
@@ -158,34 +157,23 @@ bool Capture::handlePacket(size_t len, const uint8_t * pkt){
     }
 
     struct timeval tv;
-    gettimeofday(&tv, NULL);
+    gettimeofday(&tv, NULL); //获取当前的时间
     m_pktInfor.append(ctime(static_cast<const time_t *>(&tv.tv_sec)));
     m_pktInfor.at(m_pktInfor.size()-1) = ',';
 
     pkt += ndn::ethernet::HDR_LEN; //指针偏移出以太网帧的头部
     len -= ndn::ethernet::HDR_LEN; //长度减少
     m_pktInfor.append(std::to_string(len) + ",");
-
-    if(boost::endian::big_to_native(ether->ether_type) == ndn::ethernet::ETHERTYPE_NDN){
-        return handleNdN(len, pkt);
-    }
-    else{
-        std::cerr << "Unsupported this ethertype " << std::endl;
-        return false;
-    }
+    
+    return handleNdN(len, pkt);
 }
 
 bool Capture::handleNdN(size_t len, const uint8_t *pkt){
-    if (len == 0){
-        std::cerr << "Invalid NDN packet len = 0" << std::endl;
-        return false;
-    }
-
     bool isOk = false;
     ndn::Block block;
     std::tie(isOk, block) = ndn::Block::fromBuffer(pkt, len);
     if (!isOk){
-        std::cerr << "NDN truncated packet, length " << len << std::endl;
+        log_err(ERR_NSYS, "NDN truncated packet, length = %d", len);
         return false;
     }
 
@@ -197,7 +185,7 @@ bool Capture::handleNdN(size_t len, const uint8_t *pkt){
             lpPacket.wireDecode(block);
         }
         catch (const ndn::tlv::Error &e){
-            std::cerr << " invalid packet: " << e.what() << std::endl;
+            log_err(ERR_NSYS, "Invalid packet: %s", e.what());
             return false;
         }
 
@@ -206,14 +194,14 @@ bool Capture::handleNdN(size_t len, const uint8_t *pkt){
             std::tie(begin, end) = lpPacket.get<ndn::lp::FragmentField>();
         }
         else{
-            std::cerr << "idle" << std::endl;
+            log_err(ERR_NSYS, "Don't have fragmentField");
             return false;
         }
 
         bool isOk = false;
         std::tie(isOk, netPacket) = ndn::Block::fromBuffer(&*begin, std::distance(begin, end));
         if (!isOk){
-            std::cerr << "NDN packet is fragmented" << std::endl;
+            log_err(ERR_NSYS, "NDN packet is fragmented");
             return false;
         }
     }
@@ -228,6 +216,7 @@ bool Capture::handleNdN(size_t len, const uint8_t *pkt){
                 ndn::Interest interest(netPacket);
                 ndn::Name interestName = interest.getName();
 
+                // 过滤网管Interest
                 for(auto iter = interestName.begin(); iter != interestName.end(); ++ iter){
                     if(iter->toUri() == "netmgmt"){
                         return false;
@@ -235,12 +224,29 @@ bool Capture::handleNdN(size_t len, const uint8_t *pkt){
                 }
 
                 if (lpPacket.has<ndn::lp::NackField>()){
-                    m_pktInfor.append("NACK," + interestName.toUri());
+                    ndn::lp::Nack nack(interest);
+                    nack.setHeader(lpPacket.get<ndn::lp::NackField>());
+                    std::string reason;
+                    switch(nack.getReason()){
+                        case ndn::lp::NackReason::CONGESTION:
+                            reason = "Congestion";
+                            break;
+                        case ndn::lp::NackReason::DUPLICATE:
+                            reason = "Duplicate";
+                            break;
+                        case ndn::lp::NackReason::NO_ROUTE:
+                            reason = "NoRoute";
+                            break;
+                        default:
+                            reason = "None";
+                            break;
+                    }
+                    m_pktInfor.append("NACK,(" + reason + ")" + interestName.toUri());
                 }
-                else
-                {
+                else{
                     m_pktInfor.append("INTEREST," + interestName.toUri());
                 }
+
                 return true;
                 break;
             }
@@ -249,6 +255,7 @@ bool Capture::handleNdN(size_t len, const uint8_t *pkt){
                 ndn::Data data(netPacket);
                 ndn::Name dataName = data.getName();
 
+                // 过滤网管Data
                 for(auto iter = dataName.begin(); iter != dataName.end(); ++ iter){
                     if(iter->toUri() == "netmgmt"){
                         return false;
@@ -256,29 +263,38 @@ bool Capture::handleNdN(size_t len, const uint8_t *pkt){
                 }
 
                 m_pktInfor.append("DATA," + data.getName().toUri());
+
                 return true;
                 break;
                 
             }
             default:
             {
-                std::cerr << "Unsupported NDN packet type " << netPacket.type() << std::endl;
+                log_err(ERR_NSYS, "Unsupported NDN packet type %d", netPacket.type());
+
                 return false;
                 break;
             }
         }
     }
     catch (const ndn::tlv::Error &e){
-        std::cerr << "invalid network packet: " << e.what() << std::endl;
+        log_err(ERR_NSYS, "Invalid NDN packet: %s", e.what());
         return false;
     }
 }
 
 void Capture::getMacAddr(const std::string & interface, uint8_t * addr){
+    int sd = socket(AF_INET,SOCK_STREAM,0);
+    if(sd < 0){
+        log_fatal(FAT_SYS, "Fail to create socket in getMacAddr");
+    }
+    
     struct ifreq ifreq;
-    int sock = socket(AF_INET,SOCK_STREAM,0);
     strncpy(ifreq.ifr_name, interface.c_str(), IFNAMSIZ);
-    ioctl(sock, SIOCGIFHWADDR, &ifreq);
+    int err = ioctl(sd, SIOCGIFHWADDR, &ifreq);
+    if(err){
+        log_fatal(FAT_SYS, "Fail to get Mac addr by ioctl");
+    }
 
     for(int i = 0; i < 6; i++){
         addr[i] = static_cast<u_int8_t>(ifreq.ifr_hwaddr.sa_data[i]);

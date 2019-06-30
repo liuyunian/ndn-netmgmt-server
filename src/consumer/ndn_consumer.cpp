@@ -2,6 +2,7 @@
 #include <ndn-cxx/interest.hpp>
 
 #include "ndn_consumer.h"
+#include "log/log.h"
 
 Consumer::Consumer(const std::string & name) : 
     m_name(name)
@@ -32,22 +33,23 @@ void Consumer::sendInterest(ndn::Name & interestName){
         std::bind(&Consumer::onData, this, _2), 
         std::bind(&Consumer::onNack, this, _1), 
         std::bind(&Consumer::onTimeOut, this, _1));
-        std::cout << "send Interest: " << interest.getName() << std::endl;
+
+        log_info("send Interest: %s", interest.getName().toUri().c_str());
     }
     catch (std::exception& e) {
-        std::cerr << "ERROR: " << e.what() << std::endl;
+        log_fatal(FAT_NSYS, "%s", e.what());
     }
 }
 
 void Consumer::onData(const ndn::Data & data){
-    std::cout << "INFO: Receive Data: " << data.getName() << std::endl;
+    log_info("Receive Data: %s", data.getName().toUri().c_str());
 }
 
 void Consumer::onNack(const ndn::Interest & interest){
-    std::cerr << "INFO: Nack: " << interest.getName() << std::endl;
+    log_info("Receive Nack: %s", interest.getName().toUri().c_str());
 }
 
 void Consumer::onTimeOut(const ndn::Interest & interest){
-    std::cerr << "WARNNING: Time out: " << interest.getName() << std::endl;
+    log_info("Time out: %s", interest.getName().toUri().c_str());
 }
 
